@@ -11,6 +11,7 @@
 #include <QAbstractListModel>
 #include <QDomElement>
 #include <QJsonDocument>
+#include <QVector3D>
 #include <unordered_map>
 
 #include <memory>
@@ -54,6 +55,11 @@ enum class ParamType {
     Readonly,
     Hidden,
     GradientEditor,
+    // NEW EXTENDED PARAM TYPES
+    Vector2,          // 2D vector with X, Y components
+    Vector3,          // 3D vector with X, Y, Z components
+    PushButton,       // Button that triggers an action
+    ExpandableTree,   // Hierarchical tree structure with expand/collapse
     Unknown
 };
 Q_DECLARE_METATYPE(ParamType)
@@ -174,6 +180,140 @@ struct AssetPointInfo
     }
 };
 
+struct AssetVectorInfo
+{
+    QString destNameX;
+    QString destNameY;
+    QString destNameZ;  // Only for Vector3
+    QVector3D defaultValue;
+    QVector3D minimum;
+    QVector3D maximum;
+    QVector3D factors;
+    bool isVector3{false};  // true for Vector3, false for Vector2
+    
+    explicit AssetVectorInfo(bool isVec3 = false) : isVector3(isVec3) {}
+    
+    static QVariant buildVectorFromXml(const QDomElement element, bool isVector3)
+    {
+        QString namesX, namesY, namesZ;
+        QString defaultsX, defaultsY, defaultsZ;
+        QString minimasX, minimasY, minimasZ;
+        QString maximasX, maximasY, maximasZ;
+        QString factorsX, factorsY, factorsZ;
+        
+        QDomNodeList children = element.elementsByTagName(QStringLiteral("parammap"));
+        for (int i = 0; i < children.count(); ++i) {
+            QDomElement currentParameter = children.item(i).toElement();
+            const QString target = currentParameter.attribute(QStringLiteral("target"));
+            const QString source = currentParameter.attribute(QStringLiteral("source"));
+            const QString defaultVal = currentParameter.attribute(QStringLiteral("default"));
+            const QString minVal = currentParameter.attribute(QStringLiteral("min"));
+            const QString maxVal = currentParameter.attribute(QStringLiteral("max"));
+            const QString factor = currentParameter.attribute(QStringLiteral("factor"));
+            
+            if (target == QLatin1String("x")) {
+                namesX = source;
+                defaultsX = defaultVal;
+                minimasX = minVal;
+                maximasX = maxVal;
+                factorsX = factor;
+            } else if (target == QLatin1String("y")) {
+                namesY = source;
+                defaultsY = defaultVal;
+                minimasY = minVal;
+                maximasY = maxVal;
+                factorsY = factor;
+            } else if (target == QLatin1String("z") && isVector3) {
+                namesZ = source;
+                defaultsZ = defaultVal;
+                minimasZ = minVal;
+                maximasZ = maxVal;
+                factorsZ = factor;
+            }
+        }
+        
+        AssetVectorInfo vectorInfo(isVector3);
+        const QSize profileSize = pCore->getCurrentFrameSize();
+        
+        // Parse defaults
+        vectorInfo.defaultValue.setX(convertValue(defaultsX, profileSize));
+        vectorInfo.defaultValue.setY(convertValue(defaultsY, profileSize));
+        if (isVector3) {
+            vectorInfo.defaultValue.setZ(convertValue(defaultsZ, profileSize));
+        }
+        
+        // Parse minimums
+        vectorInfo.minimum.setX(convertValue(minimasX, profileSize));
+        vectorInfo.minimum.setY(convertValue(minimasY, profileSize));
+        if (isVector3) {
+            vectorInfo.minimum.setZ(convertValue(minimasZ, profileSize));
+        }
+        
+        // Parse maximums
+        vectorInfo.maximum.setX(convertValue(maximasX, profileSize));
+        vectorInfo.maximum.setY(convertValue(maximasY, profileSize));
+        if (isVector3) {
+            vectorInfo.maximum.setZ(convertValue(maximasZ, profileSize));
+        }
+        
+        // Parse factors
+        vectorInfo.factors.setX(convertValue(factorsX, profileSize, 1.0));
+        vectorInfo.factors.setY(convertValue(factorsY, profileSize, 1.0));
+        if (isVector3) {
+            vectorInfo.factors.setZ(convertValue(factorsZ, profileSize, 1.0));
+        }
+        
+        vectorInfo.destNameX = namesX;
+        vectorInfo.destNameY = namesY;
+        vectorInfo.destNameZ = namesZ;
+        
+        return QVariant::fromValue(vectorInfo);
+    }
+};
+Q_DECLARE_METATYPE(AssetVectorInfo)
+
+struct AssetTreeInfo
+{
+    struct TreeItem {
+        QString label;
+        QString value;
+        QVector<TreeItem> children;
+        bool expanded{false};
+    };
+    
+    QVector<TreeItem> rootItems;
+    QString selectedValue;
+    
+    static QVariant buildTreeFromXml(const QDomElement element)
+    {
+        AssetTreeInfo treeInfo;
+        QDomNodeList items = element.elementsByTagName(QStringLiteral("treeitem"));
+        
+        for (int i = 0; i < items.count(); ++i) {
+            QDomElement itemElement = items.item(i).toElement();
+            TreeItem item;
+            item.label = itemElement.attribute(QStringLiteral("label"));
+            item.value = itemElement.attribute(QStringLiteral("value"));
+            item.expanded = itemElement.attribute(QStringLiteral("expanded")) == QLatin1String("true");
+            
+            // Parse child items
+            QDomNodeList children = itemElement.elementsByTagName(QStringLiteral("child"));
+            for (int j = 0; j < children.count(); ++j) {
+                QDomElement childElement = children.item(j).toElement();
+                TreeItem child;
+                child.label = childElement.attribute(QStringLiteral("label"));
+                child.value = childElement.attribute(QStringLiteral("value"));
+                item.children.append(child);
+            }
+            
+            treeInfo.rootItems.append(item);
+        }
+        
+        return QVariant::fromValue(treeInfo);
+    }
+};
+Q_DECLARE_METATYPE(AssetTreeInfo)
+
 struct AssetRectInfo
 {
     QString destName;
@@ -271,7 +411,7 @@ public:
      * @param assetXml XML to parse, from project file
      * @param assetId
      * @param ownerId
-     * @param originalDecimalPoint If a decimal point other than “.” was used, try to replace all occurrences by a “.”
+     * @param originalDecimalPoint If a decimal point other than "." was used, try to replace all occurrences by a "."
      * so numbers are parsed correctly.
      * @param parent
      */
@@ -340,7 +480,12 @@ public:
         Enum14Role,
         Enum15Role,
         Enum16Role,
-        CurveColorRole
+        CurveColorRole,
+        // New extended param types
+        Vector2Info,      // For Vector2 parameter info
+        Vector3Info,      // For Vector3 parameter info
+        TreeInfo,         // For ExpandableTree parameter info
+        ButtonAction      // For PushButton action
     };
 
     /** @brief Returns true if @param type is animated */
@@ -435,13 +580,13 @@ protected:
        The function additionally parses following keywords:
        - %width and %height that are replaced with profile's height and width.
        If keywords are found, mathematical operations are supported for double type params. For example "%width -1" is a valid value.
-    */
+     */
     QVariant parseAttribute(const QString &attribute, const QDomElement &element, QVariant defaultValue = QVariant()) const;
     QVariant parseSubAttributes(const QString &attribute, const QDomElement &element) const;
 
     /** @brief Helper function to register one more parameter that is keyframable.
        @param index is the index corresponding to this parameter
-    */
+     */
     void addKeyframeParam(const QModelIndex &index, int in, int out);
 
     /** @brief Check if all parameters for this asset are set to the default */
